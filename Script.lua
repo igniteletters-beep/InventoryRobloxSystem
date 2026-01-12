@@ -1,4 +1,7 @@
--- services variables
+-- inventory handler script 
+-- handles the UI, sorting by rarity, and category filtering
+-- note to self: make sure the buttons in FilterFrame are named exactly like the Types in the module
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -8,16 +11,17 @@ local player = Players.LocalPlayer
 local playerBackpack = player:WaitForChild("Backpack")
 local inventoryFolder = player:WaitForChild("Inventory") 
 
--- modules and all the remotes
+-- getting module data and the equip remote
 local ItemsModule = require(ReplicatedStorage:WaitForChild("ItemsModule"))
 local EquipRemote = ReplicatedStorage:WaitForChild("Equip")
 
--- ui stuff
+-- ui elements
 local InventoryBackground = script.Parent.Background
 local ItemsList = InventoryBackground.Items
 local ItemTemplate = ItemsList.Item 
 ItemTemplate.Visible = false 
 
+-- detail side panel stuff
 local ItemBackground = script.Parent.ItemBackground
 local DetailsFrame = ItemBackground.Item
 local EquipButton = DetailsFrame.Equip
@@ -25,72 +29,68 @@ local DetailsName = DetailsFrame.ItemName
 local DetailsDesc = DetailsFrame.ItemDescription
 local DetailsRarity = DetailsFrame.ItemRarity
 
--- states
-local currentSelectedItem = nil -- check which item string is being viewed
+-- filtering/sorting buttons
+local FilterButtons = InventoryBackground:FindFirstChild("FilterFrame") 
+local SortButton = InventoryBackground:FindFirstChild("SortBtn")
+
+-- current states
+local currentSelectedItem = nil 
 local isDetailsOpen = false 
+local currentCategory = "All" 
+local currentSortMode = "Rarity" -- starting with rarity sort since thats what you want
 
--- ui configs
--- this is the tweening info for the pop up window
+-- tweening configs
 local tweenInfo = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
--- the open and close end result for postions
 local openPosition = UDim2.new(0.532, 0, 0.161, 0)
 local closePosition = UDim2.new(0.251, 0, 0.159, 0)
 
--- ui configs
+-- hide detail panel on start
 ItemBackground.Position = closePosition
 ItemBackground.Visible = false
 
--- check if the tool is being held by the player or in the backpack
+-- check if item is held or in backpack
 local function getEquipStatus(itemName)
 	local char = player.Character or player.CharacterAdded:Wait()
 
-	-- checking both player and backpack locations
 	local foundInChar = char:FindFirstChild(itemName)
 	local foundInBackpack = playerBackpack:FindFirstChild(itemName)
 
 	if foundInChar or foundInBackpack then 
 		return "Unequip"
 	end
-
 	return "Equip"
 end
 
--- toggles the equip button based on the item's data
--- materials won't be equipable
+-- updates the button text based on status
 local function updateEquipButtonState()
-	if not currentSelectedItem then return end -- Sanity check
+	if not currentSelectedItem then return end 
 
 	local itemData = ItemsModule.Items[currentSelectedItem]
-
 	if itemData and itemData.Equipable then
 		EquipButton.Visible = true
 		EquipButton.Text = getEquipStatus(currentSelectedItem)
 	else
-		-- hide if the item is not equipable
+		-- hide for stuff like stones or emeralds that u cant "hold"
 		EquipButton.Visible = false
 	end
 end
 
--- does some cool animations
+-- slide out the side panel
 local function closeDetailsPanel()
 	isDetailsOpen = false
 	currentSelectedItem = nil
 
-	-- Slide out
 	local tween = TweenService:Create(ItemBackground, tweenInfo, {Position = closePosition})
 	tween:Play()
 
-	-- wait for animation to finish before fully hiding
 	task.wait(0.4)
 	if not isDetailsOpen then 
 		ItemBackground.Visible = false 
 	end
 end
 
--- opens the details panel to check out some details about the item
+-- show item info when clicked
 local function openDetailsPanel(itemName)
-	-- if they click the button twice they open and close it
 	if currentSelectedItem == itemName and isDetailsOpen then
 		closeDetailsPanel()
 		return
@@ -98,111 +98,167 @@ local function openDetailsPanel(itemName)
 
 	local itemData = ItemsModule.Items[itemName]
 	if not itemData then 
-		warn("Inventory: Attempted to view item with no Module data: " .. tostring(itemName))
+		warn("Inventory: No module info for " .. tostring(itemName))
 		return 
 	end
 
 	currentSelectedItem = itemName
 	isDetailsOpen = true
 
-	-- UI Elements
+	-- fill text labels
 	DetailsName.Text = itemData.Name
 	DetailsDesc.Text = itemData.Description
 	DetailsRarity.Text = itemData.Rarity
 
-	-- Default to white if rarity color is missing to prevent errors
+	-- color based on module colors
 	local rarityColor = ItemsModule.Rarities[itemData.Rarity] or Color3.new(1,1,1)
 	DetailsRarity.TextColor3 = rarityColor
 
 	updateEquipButtonState()
 
-	-- the popup needs to be above the scrolling frame so that is why the ZIndex is awesome
-	ItemBackground.ZIndex = 5
-	DetailsName.ZIndex = 10
-	EquipButton.ZIndex = 10
-
-	-- cool animation
 	ItemBackground.Visible = true
 	local tween = TweenService:Create(ItemBackground, tweenInfo, {Position = openPosition})
 	tween:Play()
 end
 
--- refresh of the inventory list
+-- THE SORTING LOGIC
+local function getSortedTable()
+	local displayTable = {}
+
+	-- collect items that match current filter
+	for _, itemValue in ipairs(inventoryFolder:GetChildren()) do
+		local itemData = ItemsModule.Items[itemValue.Name]
+
+		if itemData then
+			if currentCategory == "All" or itemData.Type == currentCategory then
+				table.insert(displayTable, {
+					Name = itemValue.Name,
+					Amount = itemValue.Value,
+					Rarity = itemData.Rarity,
+					Data = itemData
+				})
+			end
+		end
+	end
+
+	-- sort the items
+	table.sort(displayTable, function(a, b)
+		if currentSortMode == "Rarity" then
+			-- weight system: common is lowest (1), mythical is highest
+			-- adjust names here to match your exact rarity names in the module!
+			local weights = {
+				["Common"] = 1, 
+				["Rare"] = 2, 
+				["Legendary"] = 3, 
+				["Mytical"] = 4, 
+			}
+
+			local weightA = weights[a.Rarity] or 0
+			local weightB = weights[b.Rarity] or 0
+
+			if weightA ~= weightB then
+				-- use < to put lower weights (Common) at the start
+				return weightA < weightB 
+			end
+		end
+
+		-- default alphabetic sort if rarities are same
+		return a.Name < b.Name
+	end)
+
+	return displayTable
+end
+
+-- clear and rebuild the icons
 local function refreshInventory()
-	-- Clean up old list items
+	-- destroy old clones
 	for _, child in ipairs(ItemsList:GetChildren()) do
 		if child ~= ItemTemplate and child:IsA("ImageButton") then
 			child:Destroy()
 		end
 	end
 
-	if not inventoryFolder then return end
+	local itemsToShow = getSortedTable()
 
-	-- go through the physical NumberValues in the player's inventory folder
-	for _, itemValue in ipairs(inventoryFolder:GetChildren()) do
-		local itemName = itemValue.Name
-		local itemAmount = itemValue.Value
-		local itemData = ItemsModule.Items[itemName]
+	for _, itemInfo in ipairs(itemsToShow) do
+		local itemName = itemInfo.Name
+		local itemAmount = itemInfo.Amount
+		local itemData = itemInfo.Data
 
-		if itemData then
-			local newItem = ItemTemplate:Clone()
-			newItem.Name = itemName
-			newItem.Visible = true
-			newItem.Parent = ItemsList
+		local newItem = ItemTemplate:Clone()
+		newItem.Name = itemName
+		newItem.Visible = true
+		newItem.Parent = ItemsList
 
-			--stuff
-			newItem.ItemName.Text = itemName
-			newItem.ImageLabel.Image = itemData.Image
-			newItem.Amount.Text = "x" .. tostring(itemAmount)
+		-- fill ui labels
+		newItem.ItemName.Text = itemName
+		newItem.ImageLabel.Image = itemData.Image
+		newItem.Amount.Text = "x" .. tostring(itemAmount)
 
-			-- some visual stuff
-			local rarityColor = ItemsModule.Rarities[itemData.Rarity] or Color3.new(1,1,1)
-			newItem.ImageColor3 = rarityColor
+		-- rarity color BG
+		local rarityColor = ItemsModule.Rarities[itemData.Rarity] or Color3.new(1,1,1)
+		newItem.ImageColor3 = rarityColor
 
-			-- important to open the details panel for the item
-			newItem.MouseButton1Click:Connect(function()
-				openDetailsPanel(itemName)
+		newItem.MouseButton1Click:Connect(function()
+			openDetailsPanel(itemName)
+		end)
+	end
+end
+
+-- filter category click handlers
+if FilterButtons then
+	for _, btn in ipairs(FilterButtons:GetChildren()) do
+		if btn:IsA("TextButton") then
+			btn.MouseButton1Click:Connect(function()
+				currentCategory = btn.Name 
+				refreshInventory()
 			end)
 		end
 	end
 end
 
--- Handle the Equip/Unequip button like a pro
+-- toggle sort mode
+if SortButton then
+	SortButton.MouseButton1Click:Connect(function()
+		currentSortMode = (currentSortMode == "Name") and "Rarity" or "Name"
+		SortButton.Text = "Sort: " .. currentSortMode
+		refreshInventory()
+	end)
+end
+
+-- equip btn request
 EquipButton.MouseButton1Click:Connect(function()
 	if not currentSelectedItem then return end
-
 	local currentStatus = EquipButton.Text
 
-	-- Send request to server to handle the welding/inventory logic
 	EquipRemote:FireServer(currentSelectedItem, currentStatus)
-	
-	if currentStatus == "Equip" then
-		EquipButton.Text = "Unequip"
-	else
-		EquipButton.Text = "Equip"
-	end
+
+	-- quick UI swap for better feel
+	EquipButton.Text = (currentStatus == "Equip") and "Unequip" or "Equip"
 end)
 
--- we keep track of all the connected items so it's more smooth
+-- connection tracking to stop memory leaks
 local connectedItems = {}
 
 local function setupItemConnection(itemValue)
 	if not connectedItems[itemValue] then
-		connectedItems[itemValue] = true
-		-- if the ammount of the item changes then the inventory gets refreshed
-		itemValue.Changed:Connect(refreshInventory)
+		connectedItems[itemValue] = itemValue.Changed:Connect(refreshInventory)
 	end
 end
 
--- inputing existing inventory items
+local function removeConnection(itemValue)
+	if connectedItems[itemValue] then
+		connectedItems[itemValue]:Disconnect()
+		connectedItems[itemValue] = nil
+	end
+end
+
+-- init connections
 if inventoryFolder then
 	for _, child in ipairs(inventoryFolder:GetChildren()) do
-		if child:IsA("NumberValue") then 
-			setupItemConnection(child) 
-		end
+		if child:IsA("NumberValue") then setupItemConnection(child) end
 	end
 
-	-- waits for any new items to get added
 	inventoryFolder.ChildAdded:Connect(function(child)
 		if child:IsA("NumberValue") then
 			setupItemConnection(child)
@@ -210,25 +266,24 @@ if inventoryFolder then
 		end
 	end)
 
-	-- waits for items to get removed
-	inventoryFolder.ChildRemoved:Connect(refreshInventory)
+	inventoryFolder.ChildRemoved:Connect(function(child)
+		removeConnection(child)
+		refreshInventory()
+	end)
 end
 
--- if its equipped then the button says UnEquip if its UnEquip the button says Equipped
+-- keep button text updated on tool move
 playerBackpack.ChildAdded:Connect(updateEquipButtonState)
 playerBackpack.ChildRemoved:Connect(updateEquipButtonState)
 
--- we do it again if the player gets reseted or something
 local function onCharacterAdded(newChar)
 	updateEquipButtonState()
 	newChar.ChildAdded:Connect(updateEquipButtonState)
 	newChar.ChildRemoved:Connect(updateEquipButtonState)
 end
 
--- Hook existing character if script loads late, otherwise wait for spawn
-if player.Character then 
-	onCharacterAdded(player.Character) 
-end
+if player.Character then onCharacterAdded(player.Character) end
 player.CharacterAdded:Connect(onCharacterAdded)
 
+-- startup
 refreshInventory()
